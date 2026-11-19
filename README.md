@@ -15,6 +15,6 @@ chmod +x goofish-phase1-init.sh
 sudo ./goofish-phase1-init.sh
 ```
 
-脚本以普通用户运行（不要用 root），会装系统依赖、建虚拟环境、装 Playwright Chromium、生成只读脚手架（`core/`、`modules/`、`scripts/`、`config.json`、SQLite 库），并提供 VNC 手动登录入口 `scripts/login.py`。
+脚本以 root 或普通 sudo 用户运行均可（root 下直接 apt-get、Chromium 自动加 --no-sandbox；普通用户仍用 sudo、保留沙箱），会装系统依赖、建虚拟环境、装 Playwright Chromium、生成只读脚手架（`core/`、`modules/`、`scripts/`、`config.json`、SQLite 库），并提供 VNC 手动登录入口 `scripts/login.py`。已适配 Debian 13 的 t64 包名。
 
 输出物另存于 Google Drive 文件夹 `goofish-assistant`。

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Goofish Assistant - Debian 11 ARM64 phase-1 initializer
+# Goofish Assistant - Debian/Ubuntu AMD64+ARM64 phase-1 initializer
 # Creates a read-only login/probing scaffold. It does NOT send messages,
 # deliver goods, modify listings, or call undocumented seller APIs.
 
 set -Eeuo pipefail
+umask 077
 
 PROJECT="${GOOFISH_HOME:-$HOME/goofish-assistant}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -11,36 +12,73 @@ PYTHON_BIN="${PYTHON_BIN:-python3}"
 log() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
 
-if [[ "${EUID}" -eq 0 ]]; then
-  die "请使用普通 Linux 用户运行，不要以 root 运行浏览器。系统依赖安装时脚本会调用 sudo。"
-fi
-
-command -v sudo >/dev/null 2>&1 || die "缺少 sudo。请先安装 sudo，或由管理员安装系统依赖。"
 command -v "$PYTHON_BIN" >/dev/null 2>&1 || die "找不到 $PYTHON_BIN"
 
 ARCH="$(uname -m)"
-OS_ID="$("$PYTHON_BIN" -c 'import platform; print(platform.system())')"
-[[ "$OS_ID" == "Linux" ]] || die "此脚本只支持 Linux。"
-[[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]] || log "提示：当前架构为 $ARCH；脚本仍可继续，但目标环境是 ARM64。"
+case "$ARCH" in
+  x86_64|amd64) ARCH_FAMILY="AMD64" ;;
+  aarch64|arm64) ARCH_FAMILY="ARM64" ;;
+  *) die "暂不支持 CPU 架构：$ARCH（第一版仅支持 AMD64/x86_64 和 ARM64/aarch64）。" ;;
+esac
 
-if [[ -r /etc/os-release ]]; then
-  . /etc/os-release
-  [[ "${ID:-}" == "debian" ]] || log "提示：当前系统不是 Debian（检测到 ${ID:-unknown}）。"
-  [[ "${VERSION_ID:-}" == "11" ]] || log "提示：当前 Debian 版本为 ${VERSION_ID:-unknown}，本脚本以 Debian 11 为目标。"
+[[ "$("$PYTHON_BIN" -c 'import platform; print(platform.system())')" == "Linux" ]] || die "此脚本只支持 Linux。"
+[[ -r /etc/os-release ]] || die "无法读取 /etc/os-release，无法识别操作系统。"
+. /etc/os-release
+case "${ID:-}" in
+  debian|ubuntu) ;;
+  *) die "暂不支持此操作系统：${PRETTY_NAME:-${ID:-unknown}}（仅支持 Debian / Ubuntu）。" ;;
+esac
+
+PY_VER="$($PYTHON_BIN -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+log "系统：${PRETTY_NAME:-$ID}；架构：$ARCH_FAMILY ($ARCH)；Python：$PY_VER；项目目录：$PROJECT"
+
+# Root 直接执行 apt-get；普通用户使用 sudo，保持两种运行方式兼容。
+if [[ "${EUID}" -eq 0 ]]; then
+  APT=(apt-get)
+  log "当前为 root：系统依赖将直接使用 apt-get 安装。"
+else
+  command -v sudo >/dev/null 2>&1 || die "当前不是 root，且找不到 sudo。请安装 sudo 或改由 root 执行。"
+  APT=(sudo apt-get)
+  log "当前为普通用户：系统依赖将通过 sudo 安装。"
 fi
 
-PY_VER="$("$PYTHON_BIN" -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-log "系统架构：$ARCH；Python：$PY_VER；项目目录：$PROJECT"
+log "更新软件包索引"
+"${APT[@]}" update
 
-log "安装系统依赖（需要 sudo 权限）"
-sudo apt-get update
-sudo apt-get install -y \
-  ca-certificates curl xvfb x11vnc xauth fluxbox \
-  fonts-noto-cjk \
-  libnss3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libasound2 \
-  libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 \
-  libxkbcommon0 libpango-1.0-0 libdrm2 libxshmfence1 libgtk-3-0 \
+# Debian 13 等较新的发行版使用部分 t64 包名；按仓库实际可用名称选择。
+choose_pkg() {
+  local candidate
+  for candidate in "$@"; do
+    if apt-cache show "$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  die "软件源中找不到依赖包候选：$*"
+}
+
+SYSTEM_PACKAGES=(
+  ca-certificates curl xvfb x11vnc xauth fluxbox fonts-noto-cjk
+  libnss3 libgbm1 libx11-xcb1 libxcomposite1 libxdamage1 libxrandr2
+  libxfixes3 libxkbcommon0 libpango-1.0-0 libdrm2 libxshmfence1
   python3-venv python3-pip
+)
+add_compatible_pkg() {
+  local candidate
+  for candidate in "$@"; do
+    if apt-cache show "$candidate" >/dev/null 2>&1; then
+      SYSTEM_PACKAGES+=("$candidate")
+      return 0
+    fi
+  done
+  die "软件源中找不到依赖包候选：$*"
+}
+add_compatible_pkg libatk1.0-0t64 libatk1.0-0
+add_compatible_pkg libatk-bridge2.0-0t64 libatk-bridge2.0-0
+add_compatible_pkg libasound2t64 libasound2
+add_compatible_pkg libgtk-3-0t64 libgtk-3-0
+log "安装系统依赖"
+"${APT[@]}" install -y "${SYSTEM_PACKAGES[@]}"
 
 log "创建项目目录"
 mkdir -p "$PROJECT"/{core,modules,scripts,data,secrets,logs}
@@ -211,6 +249,7 @@ PY
 cat > core/browser.py <<'PY'
 import json
 from pathlib import Path
+import os
 from playwright.sync_api import sync_playwright
 
 def load_config(project_dir: Path):
@@ -220,6 +259,7 @@ def open_persistent_browser(project_dir: Path):
     cfg = load_config(project_dir)
     profile = project_dir / cfg["browser_profile"]
     profile.mkdir(parents=True, exist_ok=True)
+    profile.chmod(0o700)
     vp = cfg.get("browser_viewport", {"width": 1280, "height": 800})
 
     pw = sync_playwright().start()
@@ -230,7 +270,8 @@ def open_persistent_browser(project_dir: Path):
             viewport=vp,
             locale="zh-CN",
             timezone_id=cfg.get("timezone", "Asia/Shanghai"),
-            args=["--disable-dev-shm-usage"]
+            # Chromium sandbox cannot run as root; keep it enabled for normal users.
+            args=["--disable-dev-shm-usage"] + (["--no-sandbox"] if os.geteuid() == 0 else [])
         )
     except Exception:
         pw.stop()
@@ -474,7 +515,9 @@ Goofish Assistant 第一阶段初始化完成
   python main.py
 
 重要：
+  - secrets、data、logs 目录权限为 700；浏览器 profile 权限为 700。
   - 不要公开 secrets/browser-profile 或 app.log。
+  - 支持 Debian 11 ARM64 与 Debian 13 AMD64；第一版目标为 Debian/Ubuntu 的 AMD64、ARM64。
   - 不要将 VNC 5900 端口开放到公网。
   - 本版本不会自动发货、发送消息或修改商品。
   - Chromium 安装若失败，请保留完整错误信息。
